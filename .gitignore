@@ -26,3 +26,6 @@ _testmain.go
 # vimswap, bingo_config
 *.swp
 *.conf
+
+# deployment dir
+dist/
