@@ -36,6 +36,8 @@ $ fluentd -c fluentd_sample.conf
 
 bingo を起動します。  
 特に指定しなければパスワード無しのrootユーザで接続します。
+(authentication error: #HY000Slave can not handle replication events with the checksum that master is configured to log;...  
+ といったエラーが発生する場合は、mysql -u root -e 'set global binlog_checksum="NONE"' を実行してください)
 
 ```bash
 $ bingo
