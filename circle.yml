@@ -8,6 +8,7 @@ deployment:
       - go get github.com/mitchellh/gox
       - go get github.com/tcnksm/ghr
       - gox -osarch "linux/amd64 linux/arm darwin/amd64 windows/amd64" -output "dist/{{.OS}}_{{.Arch}}/{{.Dir}}"
-      - for ARCH in `ls dist`; do zip -j -o dist/bingo_$ARCH.zip dist/$ARCH/bingo*; done 
-      - ghr -t ${GITHUB_TOKEN} -u ${USERNAME} -r ${CIRCLE_PROJECT_REPONAME} --replace $(cat release_tag) dist/*.zip
+      - mkdir dist/zips
+      - for ARCH in `ls dist`; do zip -j -o dist/zips/bingo_$ARCH.zip dist/$ARCH/bingo*; done 
+      - ghr -t ${GITHUB_TOKEN} -u ${USERNAME} -r ${CIRCLE_PROJECT_REPONAME} --replace $(cat release_tag) dist/zips/
 
