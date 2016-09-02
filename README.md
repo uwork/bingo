@@ -14,6 +14,13 @@ $ cd bingo
 $ go install
 ```
 
+もしくは
+
+```bash
+$ go get github.com/uwork/bingo
+```
+
+
 # Usage
 
 今のところ fluentd 向けに転送する事を想定しています。  
@@ -36,8 +43,6 @@ $ fluentd -c fluentd_sample.conf
 
 bingo を起動します。  
 特に指定しなければパスワード無しのrootユーザで接続します。
-(authentication error: #HY000Slave can not handle replication events with the checksum that master is configured to log;...  
- といったエラーが発生する場合は、mysql -u root -e 'set global binlog_checksum="NONE"' を実行してください)
 
 ```bash
 $ bingo
@@ -46,6 +51,11 @@ $ bingo
 2016/09/02 01:19:10     Binlog Version:  4
 2016/09/02 01:19:10     Server Version:  5.7.14-log
 ```
+
+(authentication error: #HY000Slave can not handle replication events  
+ with the checksum that master is configured to log;...  
+ といったエラーが発生する場合は、  
+ mysql -u root -e 'set global binlog_checksum="NONE"' を実行してください)
 
 mysqlでテーブルを作成し、insertを行います。
 
