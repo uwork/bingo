@@ -129,7 +129,7 @@ func TestCharFloatDatetime(t *testing.T) {
 		t.Errorf("invalid char: %s", row.Columns[1].String())
 	}
 	if row.Columns[2].String() != "2921.948242" {
-		t.Errorf("invalid float: %f", row.Columns[2].String())
+		t.Errorf("invalid float: %s", row.Columns[2].String())
 	}
 	if row.Columns[3].String() != "2011-11-11 23:44:22" {
 		t.Errorf("invalid datetime: %s", row.Columns[3].String())
@@ -181,7 +181,7 @@ func TestDatetimes(t *testing.T) {
 		t.Errorf("invalid time: %s", row.Columns[1].String())
 	}
 	if row.Columns[2].String() != "2015-08-30" {
-		t.Errorf("invalid date: %f", row.Columns[2].String())
+		t.Errorf("invalid date: %s", row.Columns[2].String())
 	}
 	if row.Columns[3].String() != "2014-11-22 02:22:33" {
 		t.Errorf("invalid timestamp: %s", row.Columns[3].String())
