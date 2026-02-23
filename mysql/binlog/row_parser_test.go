@@ -240,6 +240,241 @@ func TestBlobs(t *testing.T) {
 	}
 }
 
+// ---- parseBinlogRows バリアント ----
+
+func TestParseBinlogRowsV1Event(t *testing.T) {
+	// WRITE_ROWSv1 (rowEventVersion=1): extra-data セクションなし
+	p := getParser(t)
+
+	tableId := uint64(200)
+	p.TableMaps[tableId] = &BinlogEventTableMap{
+		TableId: tableId, SchemaName: "test", TableName: "v1tbl",
+		ColumnCount: 1, ColumnTypes: []byte{TYPE_LONG},
+		ColumnMetas: []int{0}, NullableColumns: []bool{false},
+	}
+
+	ev := &BinlogEvent{
+		Header: &BinlogEventHeader{EventType: BINLOG_EVENT_WRITE_ROWSv1},
+	}
+
+	data := []byte{
+		byte(tableId), 0x00, 0x00, 0x00, 0x00, 0x00, // tableId (6 bytes LE)
+		0x00, 0x00, // flags
+		0x01,       // columns = 1 (LES)
+		0x01,       // columns-present-bitmap: bit0=1
+		// row:
+		0x00,                   // null-bitmap: not null
+		0x0A, 0x00, 0x00, 0x00, // value = 10 (TYPE_LONG)
+	}
+
+	err := p.parseBinlogRows(ev, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Rows == nil || len(ev.Rows.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %v", ev.Rows)
+	}
+	if ev.Rows.Rows[0].Columns[0].Int() != 10 {
+		t.Errorf("expected value 10, got %d", ev.Rows.Rows[0].Columns[0].Int())
+	}
+}
+
+func TestParseBinlogRowsUpdateEvent(t *testing.T) {
+	// UPDATE_ROWSv2: parseRowBinary を2回呼ぶ (before/after row)
+	p := getParser(t)
+
+	tableId := uint64(201)
+	p.TableMaps[tableId] = &BinlogEventTableMap{
+		TableId: tableId, SchemaName: "test", TableName: "updtbl",
+		ColumnCount: 1, ColumnTypes: []byte{TYPE_LONG},
+		ColumnMetas: []int{0}, NullableColumns: []bool{false},
+	}
+
+	ev := &BinlogEvent{
+		Header: &BinlogEventHeader{EventType: BINLOG_EVENT_UPDATE_ROWSv2},
+	}
+
+	data := []byte{
+		byte(tableId), 0x00, 0x00, 0x00, 0x00, 0x00, // tableId (6 bytes)
+		0x00, 0x00, // flags
+		0x02, 0x00, // extra_data_len = 2 (no extra data)
+		0x01,       // columns = 1
+		0x01,       // columns-present-bitmap1: bit0=1
+		0x01,       // columns-present-bitmap2: bit0=1
+		// before row:
+		0x00,                   // null-bitmap: not null
+		0x05, 0x00, 0x00, 0x00, // before value = 5
+		// after row:
+		0x00,                   // null-bitmap: not null
+		0x0A, 0x00, 0x00, 0x00, // after value = 10
+	}
+
+	err := p.parseBinlogRows(ev, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Rows == nil || len(ev.Rows.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %v", ev.Rows)
+	}
+	// after row の値
+	if ev.Rows.Rows[0].Columns[0].Int() != 5 {
+		t.Errorf("after row value = %d, want 5", ev.Rows.Rows[0].Columns[0].Int())
+	}
+	// BeforeRow が設定されているはず
+	if ev.Rows.Rows[0].BeforeRow == nil {
+		t.Error("expected BeforeRow to be set for UPDATE event")
+	} else if ev.Rows.Rows[0].BeforeRow.Columns[0].Int() != 10 {
+		t.Errorf("before row value = %d, want 10", ev.Rows.Rows[0].BeforeRow.Columns[0].Int())
+	}
+}
+
+// ---- parseRowBinary のパスカバレッジ ----
+
+func TestParseRowBinaryColumnNotPresent(t *testing.T) {
+	// columns-present-bitmap のビットが 0 -> col.IsPresent = false
+	p := getParser(t)
+
+	tableId := uint64(202)
+	p.TableMaps[tableId] = &BinlogEventTableMap{
+		TableId: tableId, SchemaName: "test", TableName: "notpresent",
+		ColumnCount: 1, ColumnTypes: []byte{TYPE_LONG},
+		ColumnMetas: []int{0}, NullableColumns: []bool{false},
+	}
+
+	ev := &BinlogEvent{
+		Header: &BinlogEventHeader{EventType: BINLOG_EVENT_WRITE_ROWSv1},
+	}
+
+	data := []byte{
+		byte(tableId), 0x00, 0x00, 0x00, 0x00, 0x00, // tableId
+		0x00, 0x00, // flags
+		0x01,       // columns = 1
+		0x00,       // columns-present-bitmap: bit0=0 (NOT present)
+		// row: null-bitmap のみ (カラムなしでも 1 byte)
+		0x00,
+	}
+
+	err := p.parseBinlogRows(ev, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Rows == nil || len(ev.Rows.Rows) != 1 {
+		t.Fatal("expected 1 row")
+	}
+	if ev.Rows.Rows[0].Columns[0].IsPresent {
+		t.Error("expected column IsPresent = false")
+	}
+}
+
+func TestParseRowBinaryNullColumnInRow(t *testing.T) {
+	// null-bitmap のビットが 1 -> col.IsNull=true, col.IsPresent=true
+	p := getParser(t)
+
+	tableId := uint64(203)
+	p.TableMaps[tableId] = &BinlogEventTableMap{
+		TableId: tableId, SchemaName: "test", TableName: "nullcol",
+		ColumnCount: 1, ColumnTypes: []byte{TYPE_LONG},
+		ColumnMetas: []int{0}, NullableColumns: []bool{true},
+	}
+
+	ev := &BinlogEvent{
+		Header: &BinlogEventHeader{EventType: BINLOG_EVENT_WRITE_ROWSv1},
+	}
+
+	data := []byte{
+		byte(tableId), 0x00, 0x00, 0x00, 0x00, 0x00, // tableId
+		0x00, 0x00, // flags
+		0x01,       // columns = 1
+		0x01,       // columns-present-bitmap: bit0=1 (present)
+		// row: null-bitmap bit0=1 -> NULL
+		0x01,
+	}
+
+	err := p.parseBinlogRows(ev, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ev.Rows.Rows[0].Columns[0].IsNull {
+		t.Error("expected column IsNull = true")
+	}
+	if !ev.Rows.Rows[0].Columns[0].IsPresent {
+		t.Error("expected column IsPresent = true")
+	}
+}
+
+func TestParseRowBinaryTypeNull(t *testing.T) {
+	// TYPE_NULL スキーマカラム: size=0, col.IsNull=true
+	p := getParser(t)
+
+	tableId := uint64(204)
+	p.TableMaps[tableId] = &BinlogEventTableMap{
+		TableId: tableId, SchemaName: "test", TableName: "nulltype",
+		ColumnCount: 1, ColumnTypes: []byte{TYPE_NULL},
+		ColumnMetas: []int{0}, NullableColumns: []bool{false},
+	}
+
+	ev := &BinlogEvent{
+		Header: &BinlogEventHeader{EventType: BINLOG_EVENT_WRITE_ROWSv1},
+	}
+
+	data := []byte{
+		byte(tableId), 0x00, 0x00, 0x00, 0x00, 0x00, // tableId
+		0x00, 0x00, // flags
+		0x01,       // columns = 1
+		0x01,       // columns-present-bitmap: bit0=1
+		// row: null-bitmap (not null indicator, though TYPE_NULL always reads as null)
+		0x00,
+	}
+
+	err := p.parseBinlogRows(ev, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ev.Rows.Rows[0].Columns[0].IsNull {
+		t.Error("TYPE_NULL column should have IsNull=true")
+	}
+}
+
+func TestParseRowBinaryUnknownColumnType(t *testing.T) {
+	// 不明なカラムタイプ -> default ケース (col.IsNull=true, col.IsPresent=false)
+	p := getParser(t)
+
+	tableId := uint64(205)
+	p.TableMaps[tableId] = &BinlogEventTableMap{
+		TableId: tableId, SchemaName: "test", TableName: "unknowncol",
+		ColumnCount: 1, ColumnTypes: []byte{0xEE}, // unknown type
+		ColumnMetas: []int{0}, NullableColumns: []bool{false},
+	}
+
+	ev := &BinlogEvent{
+		Header: &BinlogEventHeader{EventType: BINLOG_EVENT_WRITE_ROWSv1},
+	}
+
+	data := []byte{
+		byte(tableId), 0x00, 0x00, 0x00, 0x00, 0x00, // tableId
+		0x00, 0x00, // flags
+		0x01,       // columns = 1
+		0x01,       // columns-present-bitmap: bit0=1
+		// row: null-bitmap (not null, but unknown type has 0 size)
+		0x00,
+	}
+
+	err := p.parseBinlogRows(ev, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Rows == nil || len(ev.Rows.Rows) != 1 {
+		t.Fatal("expected 1 row")
+	}
+	col := ev.Rows.Rows[0].Columns[0]
+	if col.Type != TYPE_UNKNOWN {
+		t.Errorf("expected TYPE_UNKNOWN, got %d", col.Type)
+	}
+	if !col.IsNull {
+		t.Error("expected IsNull=true for unknown type")
+	}
+}
+
 func TestBitEnumSet(t *testing.T) {
 	p := getParser(t)
 
@@ -378,4 +613,103 @@ func TestNumbers(t *testing.T) {
 		t.Errorf("invalid bigint: %d", row.Columns[5].Int())
 	}
 
+}
+
+// TYPE_DOUBLE (meta=8) の parseRowBinary パス
+func TestParseRowBinaryTypeDouble(t *testing.T) {
+	p := getParser(t)
+	tableId := uint64(50) // 0x32: fits in 1 byte
+	p.TableMaps[tableId] = &BinlogEventTableMap{
+		TableId: tableId, SchemaName: "test", TableName: "doubletbl",
+		ColumnCount: 1, ColumnTypes: []byte{TYPE_DOUBLE},
+		ColumnMetas: []int{8}, NullableColumns: []bool{false},
+	}
+	ev := &BinlogEvent{Header: &BinlogEventHeader{EventType: BINLOG_EVENT_WRITE_ROWSv2}}
+	// 0.0 in IEEE 754 little-endian double = 8 zero bytes
+	data := []byte{
+		byte(tableId), 0x00, 0x00, 0x00, 0x00, 0x00, // tableId (6 bytes LE)
+		0x00, 0x00, // flags
+		0x02, 0x00, // extra_data_len=2 → extraLen=0
+		0x01,       // columns=1
+		0x01,       // columns-present-bitmap: bit0=1
+		0x00,       // null-bitmap: not null
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0.0 float64 LE
+	}
+	err := p.parseBinlogRows(ev, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := ev.Rows.Rows[0].Columns[0]
+	if col.Type != TYPE_DOUBLE {
+		t.Errorf("expected TYPE_DOUBLE, got %d", col.Type)
+	}
+	if col.double != 0.0 {
+		t.Errorf("expected 0.0, got %f", col.double)
+	}
+}
+
+// TYPE_TIME / TYPE_TIMESTAMP / TYPE_DATETIME (legacy TODO) のパス
+func TestParseRowBinaryLegacyTimeTypes(t *testing.T) {
+	p := getParser(t)
+	tableId := uint64(51) // 0x33: fits in 1 byte
+	p.TableMaps[tableId] = &BinlogEventTableMap{
+		TableId: tableId, SchemaName: "test", TableName: "timetbl",
+		ColumnCount: 3,
+		ColumnTypes: []byte{TYPE_TIME, TYPE_TIMESTAMP, TYPE_DATETIME},
+		ColumnMetas: []int{0, 0, 0}, NullableColumns: []bool{false, false, false},
+	}
+	ev := &BinlogEvent{Header: &BinlogEventHeader{EventType: BINLOG_EVENT_WRITE_ROWSv2}}
+	// present-bitmap for 3 columns: 0x07 (bits 0,1,2)
+	// null-bitmap for 3 columns: 0x00 (none null)
+	data := []byte{
+		byte(tableId), 0x00, 0x00, 0x00, 0x00, 0x00, // tableId (6 bytes LE)
+		0x00, 0x00, // flags
+		0x02, 0x00, // extra_data_len=2
+		0x03,       // columns=3
+		0x07,       // columns-present-bitmap: bits 0,1,2
+		0x00,       // null-bitmap
+		0x01, 0x02, 0x03,                               // TYPE_TIME (size=3)
+		0x01, 0x02, 0x03, 0x04,                         // TYPE_TIMESTAMP (size=4)
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // TYPE_DATETIME (size=8)
+	}
+	err := p.parseBinlogRows(ev, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.Rows.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(ev.Rows.Rows))
+	}
+	if ev.Rows.Rows[0].Columns[0].Type != TYPE_TIME {
+		t.Errorf("expected TYPE_TIME")
+	}
+}
+
+// UPDATE イベントで2回目の parseRowBinary がエラーを返すパス
+func TestParseBinlogRowsUpdateEventSecondError(t *testing.T) {
+	p := getParser(t)
+	tableId := uint64(52) // 0x34: fits in 1 byte
+	// TYPE_FLOAT with meta=2 → size=2 (not 4 or 8) → error in parseRowBinary
+	p.TableMaps[tableId] = &BinlogEventTableMap{
+		TableId: tableId, SchemaName: "test", TableName: "floaterr",
+		ColumnCount: 1, ColumnTypes: []byte{TYPE_FLOAT},
+		ColumnMetas: []int{2}, NullableColumns: []bool{true},
+	}
+	ev := &BinlogEvent{Header: &BinlogEventHeader{EventType: BINLOG_EVENT_UPDATE_ROWSv2}}
+	data := []byte{
+		byte(tableId), 0x00, 0x00, 0x00, 0x00, 0x00, // tableId (6 bytes LE)
+		0x00, 0x00, // flags
+		0x02, 0x00, // extra_data_len=2 → extraLen=0
+		0x01,       // columns=1
+		0x01,       // bitmap1: column 0 present
+		0x01,       // bitmap2: column 0 present
+		// Row 1 (first row, presentedColumns): column 0 is NULL
+		0x01, // null-bitmap: bit0=1 → NULL (no data)
+		// Row 2 (second row, presentedUpdateColumns): column 0 is NOT NULL
+		0x00,       // null-bitmap: bit0=0 → not null
+		0x01, 0x02, // TYPE_FLOAT meta=2 → size=2 (invalid) → error
+	}
+	err := p.parseBinlogRows(ev, data)
+	if err == nil {
+		t.Error("expected error from second parseRowBinary in UPDATE event")
+	}
 }
