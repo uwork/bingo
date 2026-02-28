@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/uwork/bingo/destination"
 	"github.com/uwork/bingo/filter"
 	"io/ioutil"
 )
@@ -15,9 +16,36 @@ type MysqlConfig struct {
 }
 
 type Config struct {
-	Mysql  MysqlConfig         `json:"mysql"`
-	Dest   string              `json:"dest"`
-	Filter filter.FilterConfig `json:"filter"`
+	Mysql  MysqlConfig            `json:"mysql"`
+	Dest   string                 `json:"dest,omitempty"`   // 後方互換: 旧設定の単一 HTTP 転送先
+	Dests  []destination.Config   `json:"destinations,omitempty"` // 新: 複数転送先
+	Filter filter.FilterConfig    `json:"filter"`
+}
+
+// BuildDestination は設定から転送先を構築して返す
+// destinations が指定されていればそちらを優先し、なければ dest を HTTP 転送先として使う
+func (c *Config) BuildDestination() (destination.Destination, error) {
+	if len(c.Dests) > 0 {
+		dests := make([]destination.Destination, 0, len(c.Dests))
+		for _, dc := range c.Dests {
+			d, err := destination.New(dc)
+			if err != nil {
+				return nil, err
+			}
+			dests = append(dests, d)
+		}
+		if len(dests) == 1 {
+			return dests[0], nil
+		}
+		return destination.NewMulti(dests), nil
+	}
+
+	// 後方互換: dest が指定されていれば HTTP 転送先として使う
+	url := c.Dest
+	if url == "" {
+		url = "http://localhost:8888/bingo.data"
+	}
+	return destination.NewHTTP(url), nil
 }
 
 func LoadConfig(opts *CliOptions) (Config, error) {
@@ -53,15 +81,26 @@ func DumpConfig(opts *CliOptions) (string, error) {
 		return "", err
 	}
 
-	// filter sample
+	// destinations サンプル（未設定の場合のみ）
+	if len(config.Dests) == 0 && config.Dest == "" {
+		config.Dests = []destination.Config{
+			{Type: "http", URL: "http://localhost:8888/bingo.data"},
+			{Type: "stdout"},
+			{Type: "loki", URL: "http://localhost:3100", Labels: map[string]string{"app": "bingo"}},
+			{Type: "elasticsearch", URL: "http://localhost:9200", Index: "binlog"},
+			{Type: "file", Path: "/var/log/bingo.jsonl"},
+		}
+	}
+
+	// filter サンプル
 	if 0 == len(config.Filter.Filters) {
-		filter := filter.Filter{
+		f := filter.Filter{
 			"dbname",
 			"tablename",
 			[]int{0, 1, 2},
 			filter.NewExpression("$$0", "=", "1"),
 		}
-		config.Filter.Filters = append(config.Filter.Filters, filter)
+		config.Filter.Filters = append(config.Filter.Filters, f)
 	}
 
 	jsonb, err := json.Marshal(config)

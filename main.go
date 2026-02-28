@@ -30,7 +30,7 @@ func main() {
 		flag.String("p", "", "mysql password"),
 		flag.String("h", "127.0.0.1", "mysql server ip address"),
 		flag.Int("P", 3306, "mysql server port"),
-		flag.String("d", "http://localhost:8888/bingo.data", "destinate for binlog data."),
+		flag.String("d", "", "destinate for binlog data (後方互換: HTTP URL を直接指定する場合)"),
 		flag.String("c", "", "config file path"),
 		flag.Bool("genconf", false, "generate config."),
 		flag.Bool("v", false, "show version"),
@@ -50,6 +50,16 @@ func main() {
 
 func doStartBinlogRead(opts *CliOptions) int {
 	conf, err := LoadConfig(opts)
+	if err != nil {
+		log.Fatal("error: ", err)
+	}
+
+	dest, err := conf.BuildDestination()
+	if err != nil {
+		log.Fatal("error: ", err)
+	}
+	defer dest.Close()
+
 	conn, err := mysql.Open(conf.Mysql.User, conf.Mysql.Pass, conf.Mysql.Host, conf.Mysql.Port)
 	if err != nil {
 		log.Fatal("error: ", err)
@@ -77,7 +87,7 @@ func doStartBinlogRead(opts *CliOptions) int {
 			}
 
 			if data != nil {
-				err = PostBinary(conf.Dest, data)
+				err = dest.Send(data)
 				if err != nil {
 					log.Println("data trans failure: ", err)
 				}

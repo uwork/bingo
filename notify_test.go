@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/uwork/bingo/destination"
 )
 
-func TestPostBinarySuccess(t *testing.T) {
+func TestHTTPDestinationSuccess(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
@@ -21,73 +23,67 @@ func TestPostBinarySuccess(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	err := PostBinary(ts.URL, []byte(`{"test":"data"}`))
-	if err != nil {
+	d := destination.NewHTTP(ts.URL)
+	if err := d.Send([]byte(`{"test":"data"}`)); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestPostBinaryNon200(t *testing.T) {
+func TestHTTPDestinationNon200(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer ts.Close()
 
-	// 非200でもエラーを返さない（既知のバグ: ログのみ）
-	err := PostBinary(ts.URL, []byte(`{}`))
-	if err != nil {
-		t.Fatal(err)
+	d := destination.NewHTTP(ts.URL)
+	// 旧 PostBinary は非200でもエラーを返さなかった（既知バグ）が、
+	// 新実装では正しくエラーを返す
+	if err := d.Send([]byte(`{}`)); err == nil {
+		t.Error("expected error for non-200 response")
 	}
 }
 
-func TestPostBinaryError(t *testing.T) {
-	// 接続できないURLを使う
-	err := PostBinary("http://127.0.0.1:1", []byte(`{}`))
-	if err == nil {
+func TestHTTPDestinationError(t *testing.T) {
+	d := destination.NewHTTP("http://127.0.0.1:1")
+	if err := d.Send([]byte(`{}`)); err == nil {
 		t.Error("expected error for unreachable URL")
 	}
 }
 
-func TestPostDataSuccess(t *testing.T) {
-	var received []byte
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received, _ = io.ReadAll(r.Body)
+func TestStdoutDestination(t *testing.T) {
+	d := destination.NewStdout()
+	if err := d.Send([]byte(`{"key":"value"}`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMultiDestination(t *testing.T) {
+	var received [][]byte
+	ts1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = append(received, body)
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer ts.Close()
+	defer ts1.Close()
 
-	err := PostData(ts.URL, map[string]interface{}{"key": "value", "num": 42})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(received) == 0 {
-		t.Error("expected non-empty body")
-	}
-}
-
-func TestPostDataNon200(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
+	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = append(received, body)
+		w.WriteHeader(http.StatusOK)
 	}))
-	defer ts.Close()
+	defer ts2.Close()
 
-	err := PostData(ts.URL, map[string]interface{}{"key": "value"})
-	if err != nil {
+	multi := destination.NewMulti([]destination.Destination{
+		destination.NewHTTP(ts1.URL),
+		destination.NewHTTP(ts2.URL),
+	})
+
+	data := []byte(`{"multi":"test"}`)
+	if err := multi.Send(data); err != nil {
 		t.Fatal(err)
 	}
-}
 
-func TestPostDataError(t *testing.T) {
-	err := PostData("http://127.0.0.1:1", map[string]interface{}{"key": "value"})
-	if err == nil {
-		t.Error("expected error for unreachable URL")
-	}
-}
-
-func TestPostDataMarshalError(t *testing.T) {
-	// json.Marshal できない値 (func) を含むマップ -> エラー
-	err := PostData("http://127.0.0.1:1", map[string]interface{}{"fn": func() {}})
-	if err == nil {
-		t.Error("expected marshal error for non-serializable value")
+	if len(received) != 2 {
+		t.Errorf("expected 2 sends, got %d", len(received))
 	}
 }
